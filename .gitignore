@@ -1,0 +1,8 @@
+.gemini
+.vscode
+.env
+*.webp
+*.png
+__pycache__/**
+checkpoints/**
+*.ipynb
