@@ -38,6 +38,7 @@ class NAFBlock(nn.Module):
         self.gamma = nn.Parameter(torch.zeros((1, c, 1, 1)), requires_grad=True)
 
     def forward(self, x):
+        residual = x
         x = x.permute(0, 2, 3, 1)
         x = self.norm1(x)
         x = x.permute(0, 3, 1, 2)
@@ -49,8 +50,9 @@ class NAFBlock(nn.Module):
         y = self.conv3(y)
 
         y = self.dropout1(y)
-        x = x + y * self.beta
+        x = residual + y * self.beta
 
+        residual = x
         y = x.permute(0, 2, 3, 1)
         y = self.norm2(y)
         y = y.permute(0, 3, 1, 2)
@@ -60,7 +62,7 @@ class NAFBlock(nn.Module):
         y = self.conv5(y)
 
         y = self.dropout2(y)
-        x = x + y * self.gamma
+        x = residual + y * self.gamma
 
         return x
 
@@ -72,6 +74,8 @@ class FFTBlock(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(c * 2, c * 2, 1, 1, 0)
         )
+        nn.init.zeros_(self.main[-1].weight)
+        nn.init.zeros_(self.main[-1].bias)
 
     def forward(self, x):
         batch, c, h, w = x.shape
@@ -98,10 +102,20 @@ class FFTBlock(nn.Module):
         return output
 
 class DualDomainNAFNet(nn.Module):
-    def __init__(self, img_channel=3, width=32, middle_blk_num=1, enc_blk_nums=[1, 1, 1, 1], dec_blk_nums=[1, 1, 1, 1]):
+    def __init__(
+        self,
+        img_channel=1,
+        width=32,
+        middle_blk_num=1,
+        enc_blk_nums=(1, 1, 1, 1),
+        dec_blk_nums=(1, 1, 1, 1),
+    ):
         super().__init__()
+        self.img_channel = img_channel
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
         self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
+        nn.init.zeros_(self.ending.weight)
+        nn.init.zeros_(self.ending.bias)
 
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
@@ -176,7 +190,7 @@ class DualDomainNAFNet(nn.Module):
 if __name__ == "__main__":
     # Test model
     model = DualDomainNAFNet(width=16)
-    x = torch.randn(1, 3, 256, 256)
+    x = torch.randn(1, 1, 256, 256)
     y = model(x)
     print(f"Input shape: {x.shape}")
     print(f"Output shape: {y.shape}")

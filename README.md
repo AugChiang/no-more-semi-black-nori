@@ -1,54 +1,120 @@
-# Stripe Stripper: Manga De-striping with Dual-Domain NAFNet
+# No More Semi-Black Nori
 
-A deep learning project to remove semi-transparent black stripes from monochrome manga images while preserving delicate screentone patterns.
+Restoration code for Japanese monochrome manga pages with screentones. The training pipeline takes clean manga scans, synthesizes semi-transparent black stripes, bars, and stains, and trains a model to recover the original one-channel page without smearing line art or halftone texture.
 
-## Overview
+`data/input_0001.png` is only a bundled smoke-test image. For quality training, use clean monochrome manga pages with real screentones.
 
-This project uses a **Dual-Domain NAFNet** (Nonlinear Activation Free Network) architecture. It is specifically optimized for manga restoration by combining:
-- **Spatial Branch**: Preserves sharp line art and structures.
-- **Frequency Branch (FFT)**: Surgically suppresses periodic noise (stripes) in the Fourier domain without blurring screentones.
-- **Focal Frequency Loss**: Ensures high-fidelity reconstruction of periodic textures.
+## Manga-Focused Defaults
 
-## Features
-- **Procedural Augmentation**: Randomly generates non-overlapping black stripes with varying alpha (0.1 - 0.8), widths, and angles.
-- **Manga-Optimized**: Specifically designed to handle the high-frequency nature of manga screentones.
-- **Efficient**: Purely convolutional architecture, significantly faster than Transformer-based models.
+- Images are loaded as grayscale by default (`--color-mode gray`).
+- The model checkpoint records `img_channel`, so grayscale and legacy RGB checkpoints both load correctly.
+- Training corruption includes thin/large translucent dark overlays, soft stains, and repeated stripe angles.
+- Optional clean screentone synthesis adds dot/line tones into light regions during training.
+- Losses combine Charbonnier pixel loss, Sobel gradient loss, Laplacian detail loss, weighted frequency loss, and local contrast loss to preserve line art and screentones.
 
-## Installation
+## Install
 
-Ensure you have a Python environment with PyTorch and CUDA support.
+Use an environment with PyTorch installed, then install the remaining runtime packages:
 
 ```bash
-conda activate ml
-pip install opencv-python scikit-image focal-frequency-loss tqdm torchvision
+pip install opencv-python pillow numpy tqdm torchvision
 ```
 
-## Usage
+## Prepare Data
 
-### 1. Prepare Data
-Place your ground truth image (e.g., `sample.webp`) in the root directory.
+Use clean manga images as targets:
 
-### 2. Training
-To train the model on your sample image:
+```text
+clean_manga/
+  page_001.png
+  page_002.png
+  page_003.png
+```
+
+Good training data should be uncorrupted or manually cleaned. The scripts create the black artifacts synthetically.
+
+## Train
+
+Default manga-mode training:
+
 ```bash
-python train.py
+python train.py --data clean_manga --epochs 100 --batch-size 4 --patch-size 256
 ```
-- Check the `samples/` directory to see visual progress during training.
-- The best model will be saved in `checkpoints/best_model.pth`.
 
-### 3. Inference
-To restore an image using the trained model:
+Recommended longer run:
+
 ```bash
-python infer.py
+python train.py \
+  --data clean_manga \
+  --epochs 300 \
+  --num-patches 4000 \
+  --batch-size 8 \
+  --patch-size 256 \
+  --width 32 \
+  --middle-blocks 2
 ```
-- This will create `stained_input.png` (for demonstration) and `restored_output.png` (the restored result).
 
-## File Structure
-- `model.py`: Dual-Domain NAFNet architecture definition.
-- `dataset.py`: Synthetic data generator with non-overlapping stripe augmentation.
-- `train.py`: Training loop with spatial and frequency losses.
-- `infer.py`: Inference script for full-image restoration.
-- `sample.webp`: Your target monochrome manga image.
+Small CPU smoke test:
 
-## Architecture Detail
-The model integrates **FFT-based Spectral Blocks** in the bottleneck of a NAFNet U-Net. This allow the network to "zero out" the specific frequencies corresponding to the stripes while protecting the broader frequency spectrum of the manga art.
+```bash
+python train.py --data data/input_0001.png --epochs 1 --num-patches 2 --batch-size 2 --patch-size 64 --width 8 --middle-blocks 1
+```
+
+Training writes:
+
+- `checkpoints/best_model.pth`
+- `checkpoints/latest_model.pth`
+- `samples/epoch_*.png`
+
+Sample grids are arranged as corrupted input, restored output, and clean target.
+
+## Restore
+
+Restore with a trained grayscale manga checkpoint:
+
+```bash
+python infer.py \
+  --input corrupted_page.png \
+  --checkpoint checkpoints/best_model.pth \
+  --output restored_page.png \
+  --mode model
+```
+
+For large manga pages, tiled inference is enabled by default:
+
+```bash
+python infer.py --input page.png --output restored.png --tile-size 512 --overlap 64
+```
+
+Use `--tile-size 0` to run the full page at once if memory allows.
+
+## Synthetic Demo
+
+To generate a black-artifact input from a clean image and restore it:
+
+```bash
+python infer.py \
+  --input clean_page.png \
+  --checkpoint checkpoints/best_model.pth \
+  --output restored_output.png \
+  --mode model \
+  --add-synthetic \
+  --synthetic-output stained_input.png
+```
+
+## RGB Compatibility
+
+The repo remains compatible with older RGB checkpoints and experiments:
+
+```bash
+python train.py --data clean_images --color-mode rgb
+```
+
+For manga, keep the default grayscale mode unless you specifically need color pages.
+
+## Files
+
+- `dataset.py`: manga dataset, screentone target synthesis, and black-artifact generator.
+- `model.py`: one-channel-first Dual-Domain NAFNet-style restoration model.
+- `train.py`: manga-oriented training loop and texture-preserving losses.
+- `infer.py`: grayscale/RGB checkpoint loading, tiled inference, and classical fallback.
