@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from PIL import Image
 from argparse import ArgumentParser
+import torchvision.transforms as v2
 from model import DualDomainNAFNet
 from dataset import StripeAugmentor
 import os
@@ -28,10 +29,14 @@ def restore_image(model, image_path, device, add_stripes=False):
         img_np = augmentor.add_stripes(img_np)
         Image.fromarray(img_np).save("stained_input.png")
         print("Saved stained input as stained_input.png")
+    # transform
+    transform = v2.Compose([
+        v2.RandomCrop(256),
+        v2.ToTensor(),
+    ])
 
     # To Tensor
-    input_tensor = torch.from_numpy(img_np).permute(2, 0, 1).float() / 255.0
-    input_tensor = input_tensor.unsqueeze(0).to(device)
+    input_tensor = transform(Image.fromarray(img_np)).unsqueeze(0).to(device)
     
     with torch.no_grad():
         output = model(input_tensor)

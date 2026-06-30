@@ -1,28 +1,48 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from argparse import ArgumentParser
 from torch.utils.data import DataLoader
 from dataset import MangaStripeDataset
 from model import DualDomainNAFNet
+import torchvision.transforms as v2
 from focal_frequency_loss import FocalFrequencyLoss
 import os
 from tqdm import tqdm
 from torchvision.utils import save_image
+
+
+def parse_args():
+    parser = ArgumentParser(description="Train DualDomainNAFNet for Image Restoration")
+    parser.add_argument("--image_dir", type=str, default="data", help="Path to the input image directory")
+    parser.add_argument("--patch_size", type=int, default=256, help="Size of the patches to extract from the image")
+    parser.add_argument("--num_patches", type=int, default=16, help="Number of patches to extract for training")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training")
+    return parser.parse_args()
 
 def train():
     # Configuration
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    batch_size = 4
-    epochs = 500
+    
     lr = 1e-3
-    image_path = "sample.webp"
-    patch_size = 256
+    args = parse_args()
+    batch_size = args.batch_size
+    image_dir = args.image_dir
+    patch_size = args.patch_size
+    num_patches = args.num_patches
+    epochs = args.epochs
+    # transform
+    transform = v2.Compose([
+        v2.RandomCrop(256),
+        v2.ToTensor(),
+    ])
     
     # Dataset and Loader
-    dataset = MangaStripeDataset(image_path, patch_size=patch_size, num_patches=1000)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    dataset = MangaStripeDataset(image_dir, patch_size=patch_size, transform=transform)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     
     # Model
     model = DualDomainNAFNet(width=32).to(device)
