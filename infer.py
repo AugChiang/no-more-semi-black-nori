@@ -1,11 +1,20 @@
 import torch
 import numpy as np
 from PIL import Image
+from argparse import ArgumentParser
 from model import DualDomainNAFNet
 from dataset import StripeAugmentor
 import os
 from torchvision import transforms
 import cv2
+
+def parse_args():
+    parser = ArgumentParser(description="Image Restoration Inference")
+    parser.add_argument("--model_path", type=str, default="checkpoints/best_model.pth", help="Path to the trained model")
+    parser.add_argument("--image_path", type=str, default="sample.webp", help="Path to the input image")
+    parser.add_argument("--output_path", type=str, default="restored_output.png", help="Path to save the restored image")
+    parser.add_argument("--add_stripes", action='store_true', help="Whether to add demo stripes to the input image")
+    return parser.parse_args()
 
 def restore_image(model, image_path, device, add_stripes=False):
     model.eval()
@@ -33,9 +42,11 @@ def restore_image(model, image_path, device, add_stripes=False):
     return Image.fromarray(output_np)
 
 def main():
+    args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_path = "checkpoints/best_model.pth"
-    image_path = "sample.webp"
+    model_path = args.model_path
+    image_path = args.image_path
+    output_path = args.output_path
     
     if not os.path.exists(model_path):
         print(f"Model not found at {model_path}. Please train first.")
@@ -46,9 +57,9 @@ def main():
     print(f"Loaded model from {model_path}")
 
     # Restore with demo stripes
-    restored_img = restore_image(model, image_path, device, add_stripes=True)
-    restored_img.save("restored_output.png")
-    print("Saved restored output as restored_output.png")
+    restored_img = restore_image(model, image_path, device, add_stripes=args.add_stripes)
+    restored_img.save(output_path)
+    print(f"Saved restored output as {output_path}")
 
 if __name__ == "__main__":
     main()
