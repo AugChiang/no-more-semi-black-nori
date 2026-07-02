@@ -1,10 +1,13 @@
 import argparse
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import yaml
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm import tqdm
@@ -14,12 +17,57 @@ from model import DualDomainNAFNet
 
 
 class CharbonnierLoss(nn.Module):
+    """Smooth reconstruction loss that remains stable near zero error."""
+
     def __init__(self, eps: float = 1e-3) -> None:
         super().__init__()
         self.eps = eps
 
     def forward(self, output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return torch.mean(torch.sqrt((output - target) ** 2 + self.eps**2))
+
+
+class EarlyStopping:
+    """Stop after a minimized validation metric stops improving.
+
+    Args:
+        patience: Consecutive unimproved epochs to allow. Zero disables stopping.
+        min_delta: Minimum metric decrease that counts as an improvement.
+
+    Call the instance once per epoch. It returns ``True`` when training should
+    stop and resets its counter whenever sufficient improvement is observed.
+    """
+
+    def __init__(self, patience: int = 20, min_delta: float = 1e-4) -> None:
+        if patience < 0:
+            raise ValueError("patience must be non-negative")
+        if min_delta < 0:
+            raise ValueError("min_delta must be non-negative")
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best = float("inf")
+        self.bad_epochs = 0
+
+    def __call__(self, metric: float) -> bool:
+        """Update state with the latest metric and report whether to stop."""
+        if metric < self.best - self.min_delta:
+            self.best = metric
+            self.bad_epochs = 0
+        else:
+            self.bad_epochs += 1
+        return self.patience > 0 and self.bad_epochs >= self.patience
+
+
+def masked_charbonnier_loss(
+    output: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    eps: float = 1e-3,
+) -> torch.Tensor:
+    """Measure restoration error primarily where synthetic damage was applied."""
+    error = torch.sqrt((output - target) ** 2 + eps**2)
+    weights = mask.expand_as(error)
+    return torch.sum(error * weights) / weights.sum().clamp_min(1.0)
 
 
 def _channelwise_kernel(kernel: torch.Tensor, channels: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
@@ -69,27 +117,76 @@ def local_contrast_loss(output: torch.Tensor, target: torch.Tensor) -> torch.Ten
     return F.l1_loss(out_detail, tgt_detail)
 
 
+TRAIN_CONFIG_KEYS = {
+    "data",
+    "epochs",
+    "batch_size",
+    "patch_size",
+    "num_patches",
+    "lr",
+    "width",
+    "middle_blocks",
+    "workers",
+    "color_mode",
+    "screentone_probability",
+    "artifact_weight",
+    "freq_weight",
+    "gradient_weight",
+    "laplacian_weight",
+    "contrast_weight",
+    "checkpoint_dir",
+    "sample_dir",
+    "sample_every",
+    "early_stop_patience",
+    "early_stop_min_delta",
+    "seed",
+}
+
+
+def get_config(path: str | Path) -> dict:
+    """Load and validate training hyperparameters from a YAML file."""
+    config_path = Path(path)
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Training config not found: {config_path}")
+    with config_path.open("r", encoding="utf-8") as file:
+        config = yaml.safe_load(file) or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"Training config must be a YAML mapping: {config_path}")
+
+    unknown = sorted(set(config) - TRAIN_CONFIG_KEYS)
+    if unknown:
+        raise ValueError(f"Unknown training config keys: {', '.join(unknown)}")
+    return config
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a manga screentone restoration model.")
-    parser.add_argument("--data", default="data", help="Clean manga image file or directory used to synthesize training pairs.")
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--patch-size", type=int, default=256)
-    parser.add_argument("--num-patches", type=int, default=1000, help="Virtual samples per epoch.")
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--width", type=int, default=32)
-    parser.add_argument("--middle-blocks", type=int, default=2)
-    parser.add_argument("--workers", type=int, default=0)
-    parser.add_argument("--color-mode", choices=("gray", "rgb"), default="gray")
-    parser.add_argument("--screentone-probability", type=float, default=0.35)
-    parser.add_argument("--freq-weight", type=float, default=0.03)
-    parser.add_argument("--gradient-weight", type=float, default=0.08)
-    parser.add_argument("--laplacian-weight", type=float, default=0.04)
-    parser.add_argument("--contrast-weight", type=float, default=0.05)
-    parser.add_argument("--checkpoint-dir", default="checkpoints")
-    parser.add_argument("--sample-dir", default="samples")
-    parser.add_argument("--sample-every", type=int, default=5)
-    parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--config", default="config/default.yaml", help="YAML training configuration.")
+    config_args, _ = parser.parse_known_args()
+    parser.set_defaults(**get_config(config_args.config))
+
+    parser.add_argument("--data", help="Clean image file or recursively scanned directory.")
+    parser.add_argument("--epochs", type=int, help="Number of complete training epochs.")
+    parser.add_argument("--batch-size", type=int, help="Patches processed per optimizer step.")
+    parser.add_argument("--patch-size", type=int, help="Square training crop size in pixels.")
+    parser.add_argument("--num-patches", type=int, help="Random synthetic patches generated per epoch.")
+    parser.add_argument("--lr", type=float, help="Initial AdamW learning rate.")
+    parser.add_argument("--width", type=int, help="Base model channel width.")
+    parser.add_argument("--middle-blocks", type=int, help="Blocks in the model bottleneck.")
+    parser.add_argument("--workers", type=int, help="DataLoader worker process count.")
+    parser.add_argument("--color-mode", choices=("gray", "rgb"), help="Training image color mode.")
+    parser.add_argument("--screentone-probability", type=float, help="Chance of adding synthetic clean screentone.")
+    parser.add_argument("--artifact-weight", type=float, help="Extra loss weight inside corrupted regions.")
+    parser.add_argument("--freq-weight", type=float, help="Frequency-detail loss weight.")
+    parser.add_argument("--gradient-weight", type=float, help="Edge-gradient loss weight.")
+    parser.add_argument("--laplacian-weight", type=float, help="Fine-detail Laplacian loss weight.")
+    parser.add_argument("--contrast-weight", type=float, help="Local-contrast loss weight.")
+    parser.add_argument("--checkpoint-dir", help="Checkpoint output directory.")
+    parser.add_argument("--sample-dir", help="Preview image output directory.")
+    parser.add_argument("--sample-every", type=int, help="Epoch interval between preview images.")
+    parser.add_argument("--early-stop-patience", type=int, help="Unimproved epochs before stopping; zero disables it.")
+    parser.add_argument("--early-stop-min-delta", type=float, help="Metric decrease required to reset patience.")
+    parser.add_argument("--seed", type=int, help="Random seed for reproducible augmentation.")
     return parser.parse_args()
 
 
@@ -130,6 +227,8 @@ def save_checkpoint(
 def train() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -147,7 +246,26 @@ def train() -> None:
         training=True,
         color_mode=args.color_mode,
         screentone_probability=args.screentone_probability,
+        return_mask=True,
     )
+    print(f"Discovered {len(dataset.paths)} training images recursively under: {args.data}")
+
+    # Generate this batch once so preview images are directly comparable across epochs.
+    preview_dataset = RestorationDataset(
+        args.data,
+        patch_size=args.patch_size,
+        num_patches=min(4, len(dataset.paths)),
+        training=False,
+        color_mode=args.color_mode,
+        screentone_probability=0.0,
+        return_mask=True,
+    )
+    preview_input, preview_target, preview_mask = next(
+        iter(DataLoader(preview_dataset, batch_size=len(preview_dataset), shuffle=False))
+    )
+    preview_input = preview_input.to(device)
+    preview_target = preview_target.to(device)
+    preview_mask = preview_mask.to(device)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -161,6 +279,7 @@ def train() -> None:
     criterion = CharbonnierLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    early_stopping = EarlyStopping(args.early_stop_patience, args.early_stop_min_delta)
 
     best_loss = float("inf")
 
@@ -169,20 +288,23 @@ def train() -> None:
         epoch_loss = 0.0
         pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{args.epochs}")
 
-        for step, (input_img, target) in enumerate(pbar):
+        for step, (input_img, target, artifact_mask) in enumerate(pbar):
             input_img = input_img.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
+            artifact_mask = artifact_mask.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
-            output = model(input_img).clamp(0.0, 1.0)
+            output = model(input_img)
 
             loss_charb = criterion(output, target)
+            loss_artifact = masked_charbonnier_loss(output, target, artifact_mask)
             loss_grad = gradient_loss(output, target)
             loss_lap = laplacian_loss(output, target)
             loss_freq = frequency_l1_loss(output, target)
             loss_contrast = local_contrast_loss(output, target)
             loss = (
                 loss_charb
+                + args.artifact_weight * loss_artifact
                 + args.gradient_weight * loss_grad
                 + args.laplacian_weight * loss_lap
                 + args.freq_weight * loss_freq
@@ -198,24 +320,40 @@ def train() -> None:
                 {
                     "loss": f"{loss.item():.5f}",
                     "pix": f"{loss_charb.item():.5f}",
+                    "artifact": f"{loss_artifact.item():.5f}",
                     "tone": f"{loss_contrast.item():.5f}",
                 }
             )
 
-            if step == 0 and (epoch == 1 or epoch % args.sample_every == 0):
-                with torch.no_grad():
-                    sample = torch.cat([input_img[:4], output[:4], target[:4]], dim=0)
-                    save_image(sample, sample_dir / f"epoch_{epoch:04d}.png", nrow=min(4, input_img.size(0)))
-
-        scheduler.step()
         avg_loss = epoch_loss / max(1, len(dataloader))
-        print(f"Epoch {epoch} avg loss: {avg_loss:.6f}")
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(f"Epoch {epoch} avg loss: {avg_loss:.6f}; lr: {current_lr:.3e}")
+
+        model.eval()
+        with torch.no_grad():
+            preview_output = model(preview_input).clamp(0.0, 1.0)
+            preview_artifact_loss = masked_charbonnier_loss(
+                preview_output, preview_target, preview_mask
+            )
+            if epoch == 1 or epoch % args.sample_every == 0:
+                sample = torch.cat([preview_input, preview_output, preview_target], dim=0)
+                save_image(sample, sample_dir / f"epoch_{epoch:04d}.png", nrow=len(preview_input))
+        preview_loss = preview_artifact_loss.item()
+        print(f"Fixed preview artifact loss: {preview_loss:.6f}")
 
         save_checkpoint(checkpoint_dir / "latest_model.pth", model, optimizer, epoch, avg_loss, args)
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            save_checkpoint(checkpoint_dir / "best_model.pth", model, optimizer, epoch, avg_loss, args)
+        if preview_loss < best_loss:
+            best_loss = preview_loss
+            save_checkpoint(checkpoint_dir / "best_model.pth", model, optimizer, epoch, preview_loss, args)
             print(f"Saved best model: {best_loss:.6f}")
+
+        scheduler.step()
+        if early_stopping(preview_loss):
+            print(
+                f"Early stopping at epoch {epoch}: preview loss did not improve "
+                f"by {args.early_stop_min_delta:g} for {args.early_stop_patience} epochs."
+            )
+            break
 
     print("Training complete.")
 

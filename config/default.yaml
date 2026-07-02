@@ -1,0 +1,26 @@
+data: data
+epochs: 100
+batch_size: 4
+patch_size: 256
+num_patches: 4000
+lr: 0.001
+
+width: 32
+middle_blocks: 2
+color_mode: gray
+
+workers: 0
+screentone_probability: 0.0
+
+artifact_weight: 4.0
+freq_weight: 0.03
+gradient_weight: 0.08
+laplacian_weight: 0.04
+contrast_weight: 0.05
+
+checkpoint_dir: checkpoints
+sample_dir: samples
+sample_every: 10
+early_stop_patience: 20
+early_stop_min_delta: 0.0001
+seed: 42

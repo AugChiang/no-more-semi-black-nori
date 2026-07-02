@@ -17,7 +17,7 @@ Restoration code for Japanese monochrome manga pages with screentones. The train
 Use an environment with PyTorch installed, then install the remaining runtime packages:
 
 ```bash
-pip install opencv-python pillow numpy tqdm torchvision
+pip install opencv-python pillow numpy pyyaml tqdm torchvision
 ```
 
 ## Prepare Data
@@ -40,6 +40,9 @@ Default manga-mode training:
 ```bash
 python train.py --data clean_manga --epochs 100 --batch-size 4 --patch-size 256
 ```
+
+Training defaults are loaded from `config/default.yaml`. CLI arguments override
+individual YAML values; use `--config path/to/config.yaml` for another preset.
 
 Recommended longer run:
 

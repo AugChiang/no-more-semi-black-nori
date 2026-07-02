@@ -14,6 +14,7 @@ IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
 def list_image_paths(path: Union[str, Path]) -> list[Path]:
+    """Return supported images from a file or recursively from a directory."""
     root = Path(path)
     if root.is_file():
         if root.suffix.lower() not in IMG_EXTENSIONS:
@@ -21,7 +22,11 @@ def list_image_paths(path: Union[str, Path]) -> list[Path]:
         return [root]
     if not root.exists():
         raise FileNotFoundError(f"Image path does not exist: {root}")
-    paths = sorted(p for p in root.rglob("*") if p.suffix.lower() in IMG_EXTENSIONS)
+    paths = sorted(
+        p
+        for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() in IMG_EXTENSIONS
+    )
     if not paths:
         raise ValueError(f"No images found under: {root}")
     return paths
@@ -233,12 +238,14 @@ class RestorationDataset(Dataset):
         color_mode: str = "gray",
         screentone_probability: float = 0.35,
         augmentor: Optional[BlackArtifactAugmentor] = None,
+        return_mask: bool = False,
     ) -> None:
         self.paths = list_image_paths(image_path)
         self.patch_size = patch_size
         self.num_patches = num_patches
         self.training = training
         self.color_mode = color_mode
+        self.return_mask = return_mask
         self.augmentor = augmentor or BlackArtifactAugmentor()
         self.screentone_synth = ScreentoneSynthesizer(probability=screentone_probability)
 
@@ -247,14 +254,19 @@ class RestorationDataset(Dataset):
             return self.num_patches
         return len(self.paths)
 
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        path = self.paths[index % len(self.paths)]
+    def __getitem__(self, index: int):
+        if self.training and self.num_patches is not None:
+            path = random.choice(self.paths)
+        else:
+            path = self.paths[index % len(self.paths)]
         image = Image.open(path)
         image = self._prepare_patch(image)
         target = pil_to_tensor(image, self.color_mode)
         if self.training:
             target = self.screentone_synth(target)
-        corrupted, _ = self.augmentor(target)
+        corrupted, mask = self.augmentor(target)
+        if self.return_mask:
+            return corrupted, target, mask
         return corrupted, target
 
     def _prepare_patch(self, image: Image.Image) -> Image.Image:

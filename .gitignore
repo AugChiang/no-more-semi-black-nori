@@ -2,6 +2,7 @@
 .agents
 .codex
 .vscode
+AGENTS.md
 .env
 *.webp
 *.png
@@ -9,3 +10,5 @@
 __pycache__/**
 checkpoints/**
 *.ipynb
+data/*/*.json
+.smoke_test
