@@ -1,44 +1,14 @@
 from pathlib import Path
 import random
-from typing import Optional, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from utils import list_image_paths, pil_to_tensor
 from torchvision.transforms import functional as TF
-
-
-IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
-
-
-def list_image_paths(path: Union[str, Path]) -> list[Path]:
-    """Return supported images from a file or recursively from a directory."""
-    root = Path(path)
-    if root.is_file():
-        if root.suffix.lower() not in IMG_EXTENSIONS:
-            raise ValueError(f"Unsupported image extension: {root}")
-        return [root]
-    if not root.exists():
-        raise FileNotFoundError(f"Image path does not exist: {root}")
-    paths = sorted(
-        p
-        for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in IMG_EXTENSIONS
-    )
-    if not paths:
-        raise ValueError(f"No images found under: {root}")
-    return paths
-
-
-def pil_to_tensor(image: Image.Image, color_mode: str = "gray") -> torch.Tensor:
-    if color_mode == "gray":
-        return TF.to_tensor(image.convert("L"))
-    if color_mode == "rgb":
-        return TF.to_tensor(image.convert("RGB"))
-    raise ValueError(f"Unsupported color_mode: {color_mode}")
-
 
 class ScreentoneSynthesizer:
     """Optionally injects clean dot/line tones into light regions of training targets."""
@@ -238,16 +208,26 @@ class RestorationDataset(Dataset):
         color_mode: str = "gray",
         screentone_probability: float = 0.35,
         augmentor: Optional[BlackArtifactAugmentor] = None,
+        screentone_synthesizer: Optional[ScreentoneSynthesizer] = None,
         return_mask: bool = False,
+        image_paths: Optional[Sequence[Union[str, Path]]] = None,
     ) -> None:
-        self.paths = list_image_paths(image_path)
+        self.paths = (
+            [Path(path) for path in image_paths]
+            if image_paths is not None
+            else list_image_paths(image_path)
+        )
+        if not self.paths:
+            raise ValueError("RestorationDataset requires at least one image")
         self.patch_size = patch_size
         self.num_patches = num_patches
         self.training = training
         self.color_mode = color_mode
         self.return_mask = return_mask
         self.augmentor = augmentor or BlackArtifactAugmentor()
-        self.screentone_synth = ScreentoneSynthesizer(probability=screentone_probability)
+        self.screentone_synth = screentone_synthesizer or ScreentoneSynthesizer(
+            probability=screentone_probability
+        )
 
     def __len__(self) -> int:
         if self.num_patches is not None:
@@ -299,7 +279,3 @@ class RestorationDataset(Dataset):
         left = max(0, (w - size) // 2)
         top = max(0, (h - size) // 2)
         return image.crop((left, top, left + size, top + size))
-
-
-StripeAugmentor = BlackArtifactAugmentor
-MangaStripeDataset = RestorationDataset
