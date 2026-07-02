@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 from utils import list_image_paths, pil_to_tensor
 from torchvision.transforms import functional as TF
 
+
 class ScreentoneSynthesizer:
     """Optionally injects clean dot/line tones into light regions of training targets."""
 
@@ -53,7 +54,7 @@ class ScreentoneSynthesizer:
                 cv2.rectangle(region, (x0, y0), (x1, y1), 1.0, -1)
 
             period = random.randint(4, 12)
-            angle = np.deg2rad(random.choice((0, 15, 30, 45, 60, 75, 90)))
+            angle = np.deg2rad(random.choice(range(0, 180)))
             xr = xx * np.cos(angle) + yy * np.sin(angle)
             yr = -xx * np.sin(angle) + yy * np.cos(angle)
 
