@@ -12,9 +12,28 @@
 - batch_size: Patches processed per optimizer update.
 - patch_size: Width and height of each square crop in pixels.
 - num_patches: Random synthetic patches generated per epoch.
+- validation_split: Fraction of clean source pages held out for validation.
 - lr: Initial AdamW learning rate.
 - workers: DataLoader worker processes; zero loads data in the training process.
 - screentone_probability: Probability of adding synthetic clean screentone to a target crop.
+
+### Augmentor
+#### screentone: `ScreentoneSynthesizer` constructor arguments.
+  - probability: Chance of adding clean synthetic tone to a training target.
+  - region_count: Inclusive number of tone regions per augmented crop.
+  - strength: Minimum and maximum tone opacity.
+
+#### artifact_augmentor: `BlackArtifactAugmentor` constructor arguments.
+  - alpha_range: Minimum and maximum opacity of generated black overlays.
+
+#### Inclusive shape-count ranges per crop:
+  - stripe_count: [m, M] 
+  - bar_count: [m, M]
+  - stain_count: [m, M]
+#### Independent probabilities of generating each artifact type.
+  - p_stripes: 0.88
+  - p_bars: 0.58
+  - p_stains: 0.45
 
 ### Losses
 - artifact_weight: Extra reconstruction weight within synthetic artifact masks.

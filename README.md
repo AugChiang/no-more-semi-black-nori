@@ -67,9 +67,13 @@ Training writes:
 
 - `checkpoints/best_model.pth`
 - `checkpoints/latest_model.pth`
+- `checkpoints/training_loss.npy`
+- `checkpoints/validation_loss.npy`
 - `samples/epoch_*.png`
 
 Sample grids are arranged as corrupted input, restored output, and clean target.
+Clean source pages are split into training and validation sets using
+`validation_split` from the YAML configuration.
 
 ## Restore
 

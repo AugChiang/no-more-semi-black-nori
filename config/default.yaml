@@ -3,6 +3,7 @@ epochs: 100
 batch_size: 4
 patch_size: 256
 num_patches: 4000
+validation_split: 0.1
 lr: 0.001
 
 width: 32
@@ -10,7 +11,28 @@ middle_blocks: 2
 color_mode: gray
 
 workers: 0
-screentone_probability: 0.0
+
+# ScreentoneSynthesizer constructor arguments.
+screentone:
+  # Chance of adding clean synthetic tone to a training target.
+  probability: 0.0
+  # Inclusive number of tone regions per augmented crop.
+  region_count: [1, 4]
+  # Minimum and maximum tone opacity.
+  strength: [0.08, 0.32]
+
+# BlackArtifactAugmentor constructor arguments.
+artifact_augmentor:
+  # Minimum and maximum opacity of generated black overlays.
+  alpha_range: [0.10, 0.72]
+  # Inclusive shape-count ranges per crop.
+  stripe_count: [1, 8]
+  bar_count: [0, 4]
+  stain_count: [0, 4]
+  # Independent probabilities of generating each artifact type.
+  p_stripes: 0.88
+  p_bars: 0.58
+  p_stains: 0.45
 
 artifact_weight: 4.0
 freq_weight: 0.03

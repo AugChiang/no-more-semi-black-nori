@@ -12,7 +12,12 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm import tqdm
 
-from dataset import RestorationDataset
+from dataset import (
+    BlackArtifactAugmentor,
+    RestorationDataset,
+    ScreentoneSynthesizer,
+    list_image_paths,
+)
 from model import DualDomainNAFNet
 
 
@@ -117,18 +122,63 @@ def local_contrast_loss(output: torch.Tensor, target: torch.Tensor) -> torch.Ten
     return F.l1_loss(out_detail, tgt_detail)
 
 
+def restoration_loss(
+    output: torch.Tensor,
+    target: torch.Tensor,
+    artifact_mask: torch.Tensor,
+    criterion: CharbonnierLoss,
+    args: argparse.Namespace,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Compute the weighted restoration objective and its components."""
+    components = {
+        "pixel": criterion(output, target),
+        "artifact": masked_charbonnier_loss(output, target, artifact_mask),
+        "gradient": gradient_loss(output, target),
+        "laplacian": laplacian_loss(output, target),
+        "frequency": frequency_l1_loss(output, target),
+        "contrast": local_contrast_loss(output, target),
+    }
+    total = (
+        components["pixel"]
+        + args.artifact_weight * components["artifact"]
+        + args.gradient_weight * components["gradient"]
+        + args.laplacian_weight * components["laplacian"]
+        + args.freq_weight * components["frequency"]
+        + args.contrast_weight * components["contrast"]
+    )
+    return total, components
+
+
+def split_image_paths(
+    paths: list[Path], validation_split: float, seed: int
+) -> tuple[list[Path], list[Path]]:
+    """Deterministically split clean source pages into training and validation sets."""
+    if not 0.0 <= validation_split < 1.0:
+        raise ValueError("validation_split must be in the range [0, 1)")
+    if len(paths) < 2 or validation_split == 0.0:
+        print("Validation split disabled or impossible; validation reuses training pages.")
+        return paths, paths
+
+    shuffled = paths.copy()
+    random.Random(seed).shuffle(shuffled)
+    validation_count = min(len(paths) - 1, max(1, round(len(paths) * validation_split)))
+    return shuffled[validation_count:], shuffled[:validation_count]
+
+
 TRAIN_CONFIG_KEYS = {
     "data",
     "epochs",
     "batch_size",
     "patch_size",
     "num_patches",
+    "validation_split",
     "lr",
     "width",
     "middle_blocks",
     "workers",
     "color_mode",
-    "screentone_probability",
+    "screentone",
+    "artifact_augmentor",
     "artifact_weight",
     "freq_weight",
     "gradient_weight",
@@ -140,6 +190,19 @@ TRAIN_CONFIG_KEYS = {
     "early_stop_patience",
     "early_stop_min_delta",
     "seed",
+}
+
+DATASET_CONFIG_KEYS = {
+    "screentone": {"probability", "region_count", "strength"},
+    "artifact_augmentor": {
+        "alpha_range",
+        "stripe_count",
+        "bar_count",
+        "stain_count",
+        "p_stripes",
+        "p_bars",
+        "p_stains",
+    },
 }
 
 
@@ -156,6 +219,16 @@ def get_config(path: str | Path) -> dict:
     unknown = sorted(set(config) - TRAIN_CONFIG_KEYS)
     if unknown:
         raise ValueError(f"Unknown training config keys: {', '.join(unknown)}")
+    for section, allowed_keys in DATASET_CONFIG_KEYS.items():
+        values = config.get(section)
+        if not isinstance(values, dict):
+            raise ValueError(f"Training config section '{section}' must be a mapping")
+        unknown = sorted(set(values) - allowed_keys)
+        if unknown:
+            raise ValueError(
+                f"Unknown keys in training config section '{section}': "
+                f"{', '.join(unknown)}"
+            )
     return config
 
 
@@ -170,12 +243,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, help="Patches processed per optimizer step.")
     parser.add_argument("--patch-size", type=int, help="Square training crop size in pixels.")
     parser.add_argument("--num-patches", type=int, help="Random synthetic patches generated per epoch.")
+    parser.add_argument("--validation-split", type=float, help="Fraction of clean pages reserved for validation.")
     parser.add_argument("--lr", type=float, help="Initial AdamW learning rate.")
     parser.add_argument("--width", type=int, help="Base model channel width.")
     parser.add_argument("--middle-blocks", type=int, help="Blocks in the model bottleneck.")
     parser.add_argument("--workers", type=int, help="DataLoader worker process count.")
     parser.add_argument("--color-mode", choices=("gray", "rgb"), help="Training image color mode.")
-    parser.add_argument("--screentone-probability", type=float, help="Chance of adding synthetic clean screentone.")
     parser.add_argument("--artifact-weight", type=float, help="Extra loss weight inside corrupted regions.")
     parser.add_argument("--freq-weight", type=float, help="Frequency-detail loss weight.")
     parser.add_argument("--gradient-weight", type=float, help="Edge-gradient loss weight.")
@@ -239,33 +312,52 @@ def train() -> None:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     sample_dir.mkdir(parents=True, exist_ok=True)
 
+    all_paths = list_image_paths(args.data)
+    train_paths, validation_paths = split_image_paths(
+        all_paths, args.validation_split, args.seed
+    )
+    screentone_synthesizer = ScreentoneSynthesizer(**args.screentone)
+    artifact_augmentor = BlackArtifactAugmentor(**args.artifact_augmentor)
     dataset = RestorationDataset(
         args.data,
         patch_size=args.patch_size,
         num_patches=args.num_patches,
         training=True,
         color_mode=args.color_mode,
-        screentone_probability=args.screentone_probability,
+        augmentor=artifact_augmentor,
+        screentone_synthesizer=screentone_synthesizer,
         return_mask=True,
+        image_paths=train_paths,
     )
-    print(f"Discovered {len(dataset.paths)} training images recursively under: {args.data}")
+    print(
+        f"Discovered {len(all_paths)} images under {args.data}: "
+        f"{len(train_paths)} training, {len(validation_paths)} validation"
+    )
 
-    # Generate this batch once so preview images are directly comparable across epochs.
-    preview_dataset = RestorationDataset(
+    validation_dataset = RestorationDataset(
         args.data,
         patch_size=args.patch_size,
-        num_patches=min(4, len(dataset.paths)),
+        num_patches=None,
         training=False,
         color_mode=args.color_mode,
-        screentone_probability=0.0,
+        augmentor=artifact_augmentor,
+        screentone_synthesizer=screentone_synthesizer,
         return_mask=True,
+        image_paths=validation_paths,
     )
-    preview_input, preview_target, preview_mask = next(
-        iter(DataLoader(preview_dataset, batch_size=len(preview_dataset), shuffle=False))
+    # Cache corruptions once so validation metrics are directly comparable by epoch.
+    validation_batches = list(
+        DataLoader(
+            validation_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.workers,
+            pin_memory=device.type == "cuda",
+        )
     )
-    preview_input = preview_input.to(device)
-    preview_target = preview_target.to(device)
-    preview_mask = preview_mask.to(device)
+    preview_input, preview_target, _ = validation_batches[0]
+    preview_input = preview_input[:4].to(device)
+    preview_target = preview_target[:4].to(device)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -282,6 +374,8 @@ def train() -> None:
     early_stopping = EarlyStopping(args.early_stop_patience, args.early_stop_min_delta)
 
     best_loss = float("inf")
+    training_history: list[float] = []
+    validation_history: list[float] = []
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -296,19 +390,8 @@ def train() -> None:
             optimizer.zero_grad(set_to_none=True)
             output = model(input_img)
 
-            loss_charb = criterion(output, target)
-            loss_artifact = masked_charbonnier_loss(output, target, artifact_mask)
-            loss_grad = gradient_loss(output, target)
-            loss_lap = laplacian_loss(output, target)
-            loss_freq = frequency_l1_loss(output, target)
-            loss_contrast = local_contrast_loss(output, target)
-            loss = (
-                loss_charb
-                + args.artifact_weight * loss_artifact
-                + args.gradient_weight * loss_grad
-                + args.laplacian_weight * loss_lap
-                + args.freq_weight * loss_freq
-                + args.contrast_weight * loss_contrast
+            loss, components = restoration_loss(
+                output, target, artifact_mask, criterion, args
             )
 
             loss.backward()
@@ -319,9 +402,9 @@ def train() -> None:
             pbar.set_postfix(
                 {
                     "loss": f"{loss.item():.5f}",
-                    "pix": f"{loss_charb.item():.5f}",
-                    "artifact": f"{loss_artifact.item():.5f}",
-                    "tone": f"{loss_contrast.item():.5f}",
+                    "pix": f"{components['pixel'].item():.5f}",
+                    "artifact": f"{components['artifact'].item():.5f}",
+                    "tone": f"{components['contrast'].item():.5f}",
                 }
             )
 
@@ -330,25 +413,44 @@ def train() -> None:
         print(f"Epoch {epoch} avg loss: {avg_loss:.6f}; lr: {current_lr:.3e}")
 
         model.eval()
+        validation_sum = 0.0
+        validation_samples = 0
         with torch.no_grad():
-            preview_output = model(preview_input).clamp(0.0, 1.0)
-            preview_artifact_loss = masked_charbonnier_loss(
-                preview_output, preview_target, preview_mask
-            )
+            for validation_input, validation_target, validation_mask in validation_batches:
+                validation_input = validation_input.to(device, non_blocking=True)
+                validation_target = validation_target.to(device, non_blocking=True)
+                validation_mask = validation_mask.to(device, non_blocking=True)
+                validation_output = model(validation_input)
+                batch_loss, _ = restoration_loss(
+                    validation_output,
+                    validation_target,
+                    validation_mask,
+                    criterion,
+                    args,
+                )
+                batch_size = validation_input.size(0)
+                validation_sum += batch_loss.item() * batch_size
+                validation_samples += batch_size
+
+            validation_loss = validation_sum / validation_samples
             if epoch == 1 or epoch % args.sample_every == 0:
+                preview_output = model(preview_input).clamp(0.0, 1.0)
                 sample = torch.cat([preview_input, preview_output, preview_target], dim=0)
                 save_image(sample, sample_dir / f"epoch_{epoch:04d}.png", nrow=len(preview_input))
-        preview_loss = preview_artifact_loss.item()
-        print(f"Fixed preview artifact loss: {preview_loss:.6f}")
+        training_history.append(avg_loss)
+        validation_history.append(validation_loss)
+        np.save(checkpoint_dir / "training_loss.npy", np.asarray(training_history, dtype=np.float32))
+        np.save(checkpoint_dir / "validation_loss.npy", np.asarray(validation_history, dtype=np.float32))
+        print(f"Validation loss: {validation_loss:.6f}")
 
         save_checkpoint(checkpoint_dir / "latest_model.pth", model, optimizer, epoch, avg_loss, args)
-        if preview_loss < best_loss:
-            best_loss = preview_loss
-            save_checkpoint(checkpoint_dir / "best_model.pth", model, optimizer, epoch, preview_loss, args)
+        if validation_loss < best_loss:
+            best_loss = validation_loss
+            save_checkpoint(checkpoint_dir / "best_model.pth", model, optimizer, epoch, validation_loss, args)
             print(f"Saved best model: {best_loss:.6f}")
 
         scheduler.step()
-        if early_stopping(preview_loss):
+        if early_stopping(validation_loss):
             print(
                 f"Early stopping at epoch {epoch}: preview loss did not improve "
                 f"by {args.early_stop_min_delta:g} for {args.early_stop_patience} epochs."
