@@ -10,5 +10,6 @@ AGENTS.md
 __pycache__/**
 checkpoints/**
 *.ipynb
+data/*.json
 data/*/*.json
 .smoke_test
