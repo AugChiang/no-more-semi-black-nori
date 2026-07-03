@@ -1,13 +1,13 @@
 data: data
 epochs: 100
-batch_size: 4
+batch_size: 32
 patch_size: 256
-num_patches: 4000
+num_patches: 2048
 validation_split: 0.1
 lr: 0.001
 
 width: 32
-middle_blocks: 2
+middle_blocks: 4
 color_mode: gray
 
 workers: 0
@@ -20,7 +20,7 @@ screentone:
 artifact_augmentor:
   alpha_range: [0.20, 0.80]
   stripe_count: [1, 4]
-  bar_count: [1, 4]
+  bar_count: [1, 2]
   stain_count: [0, 1]
   p_stripes: 0.88
   p_bars: 0.58
@@ -35,6 +35,6 @@ contrast_weight: 0.05
 checkpoint_dir: checkpoints
 sample_dir: samples
 sample_every: 10
-early_stop_patience: 20
+early_stop_patience: 5
 early_stop_min_delta: 0.0001
 seed: 42
