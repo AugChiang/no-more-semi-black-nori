@@ -10,18 +10,21 @@ AGENTS.md
 __pycache__/
 checkpoints/**
 samples/**
-pretrain-weights/
 *.ipynb
 data/*.json
 data/*/*.json
 .smoke_test
+
+# pretrain-weights
+*.pth
+*.pt
 
 # test repo
 NudeNet/
 mosaic-tool/
 
 # skill
-.gputw-skill/
+.gputw-skill
 
 # dataset
 data/
