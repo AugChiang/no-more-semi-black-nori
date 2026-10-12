@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class SimpleGate(nn.Module):
     def forward(self, x):
         x1, x2 = x.chunk(2, dim=1)
@@ -102,16 +103,28 @@ class FFTBlock(nn.Module):
         return output
 
 class DualDomainNAFNet(nn.Module):
+    """NAFNet restoration backbone with an optional legacy FFT bottleneck."""
+
     def __init__(
         self,
-        img_channel=1,
-        width=32,
-        middle_blk_num=1,
-        enc_blk_nums=(1, 1, 1, 1),
-        dec_blk_nums=(1, 1, 1, 1),
-    ):
+        img_channel: int = 1,
+        width: int = 32,
+        middle_blk_num: int = 1,
+        enc_blk_nums: tuple[int, ...] = (1, 1, 1, 1),
+        dec_blk_nums: tuple[int, ...] = (1, 1, 1, 1),
+        use_fft: bool = False,
+    ) -> None:
         super().__init__()
+        if not enc_blk_nums or len(enc_blk_nums) != len(dec_blk_nums):
+            raise ValueError("Encoder and decoder stage counts must match")
+        if width <= 0 or middle_blk_num < 0 or any(n < 0 for n in (*enc_blk_nums, *dec_blk_nums)):
+            raise ValueError("Model width and block counts must be nonnegative")
         self.img_channel = img_channel
+        self.width = width
+        self.middle_blk_num = middle_blk_num
+        self.enc_blk_nums = tuple(enc_blk_nums)
+        self.dec_blk_nums = tuple(dec_blk_nums)
+        self.use_fft = use_fft
         self.intro = nn.Conv2d(in_channels=img_channel, out_channels=width, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
         self.ending = nn.Conv2d(in_channels=width, out_channels=img_channel, kernel_size=3, padding=1, stride=1, groups=1, bias=True)
         nn.init.zeros_(self.ending.weight)
@@ -137,8 +150,7 @@ class DualDomainNAFNet(nn.Module):
             nn.Sequential(*[NAFBlock(chan) for _ in range(middle_blk_num)])
         )
         
-        # FFT Block in the middle
-        self.fft_block = FFTBlock(chan)
+        self.fft_block = FFTBlock(chan) if use_fft else None
 
         for num in dec_blk_nums:
             self.ups.append(
@@ -167,8 +179,8 @@ class DualDomainNAFNet(nn.Module):
             x = down(x)
 
         x = self.middle_blks[0](x)
-        # Apply FFT refinement in the bottleneck
-        x = x + self.fft_block(x)
+        if self.fft_block is not None:
+            x = x + self.fft_block(x)
 
         for decoder, up, enc_skip in zip(self.decoders, self.ups, encs[::-1]):
             x = up(x)

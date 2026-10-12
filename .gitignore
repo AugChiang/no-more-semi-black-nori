@@ -7,9 +7,13 @@ AGENTS.md
 *.webp
 *.png
 *.jpg
-__pycache__/**
+__pycache__/
 checkpoints/**
+samples/**
+pretrain-weights/
 *.ipynb
 data/*.json
 data/*/*.json
 .smoke_test
+NudeNet/
+mosaic-tool/

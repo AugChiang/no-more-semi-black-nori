@@ -10,6 +10,7 @@ from PIL import Image
 
 from dataset import BlackArtifactAugmentor
 from model import DualDomainNAFNet
+from nudenet_regions import RegionBox, load_nudenet_regions
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,6 +25,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overlap", type=int, default=64)
     parser.add_argument("--add-synthetic", action="store_true", help="Add synthetic artifacts before restoration.")
     parser.add_argument("--synthetic-output", default="stained_input.png")
+    parser.add_argument("--nudenet-weights", help="NudeNet 640m .pt weights; required with --add-synthetic.")
+    parser.add_argument("--nudenet-cache", default="data/nudenet_regions.json")
+    parser.add_argument("--nudenet-confidence", type=float, default=0.15)
     return parser.parse_args()
 
 
@@ -49,18 +53,20 @@ def _checkpoint_img_channel(checkpoint: object, fallback: int = 1) -> int:
 
 def load_checkpoint(path: Path, device: torch.device, fallback_width: int, fallback_channel: int) -> DualDomainNAFNet:
     checkpoint = torch.load(path, map_location=device)
+    state = _checkpoint_state(checkpoint)
     img_channel = _checkpoint_img_channel(checkpoint, fallback=fallback_channel)
-    if isinstance(checkpoint, dict) and "model" in checkpoint:
-        model_args = checkpoint.get("model_args", {})
-        model = DualDomainNAFNet(
-            img_channel=img_channel,
-            width=int(model_args.get("width", fallback_width)),
-            middle_blk_num=int(model_args.get("middle_blk_num", 1)),
-        ).to(device)
-        model.load_state_dict(checkpoint["model"])
-    else:
-        model = DualDomainNAFNet(img_channel=img_channel, width=fallback_width).to(device)
-        model.load_state_dict(checkpoint)
+    model_args = checkpoint.get("model_args", {}) if "model" in checkpoint else {}
+    model = DualDomainNAFNet(
+        img_channel=img_channel,
+        width=int(model_args.get("width", fallback_width)),
+        middle_blk_num=int(model_args.get("middle_blk_num", 1)),
+        enc_blk_nums=tuple(model_args.get("enc_blk_nums", (1, 1, 1, 1))),
+        dec_blk_nums=tuple(model_args.get("dec_blk_nums", (1, 1, 1, 1))),
+        use_fft=bool(model_args.get(
+            "use_fft", any(key.startswith("fft_block.") for key in state)
+        )),
+    ).to(device)
+    model.load_state_dict(state)
     model.eval()
     return model
 
@@ -155,12 +161,22 @@ def classical_restore(image: Image.Image) -> Image.Image:
     return Image.fromarray((restored * 255.0).astype(np.uint8), mode="L")
 
 
-def maybe_add_synthetic(image: Image.Image, output_path: Optional[Path], channels: int) -> Image.Image:
+def maybe_add_synthetic(
+    image: Image.Image,
+    output_path: Optional[Path],
+    channels: int,
+    target_box: Optional[RegionBox] = None,
+    target_boxes: Optional[list[RegionBox]] = None,
+) -> Image.Image:
+    if target_box is None and not target_boxes:
+        raise ValueError("Synthetic bars require at least one NudeNet target box")
     if channels == 1:
         arr = np.array(image.convert("L"))
     else:
         arr = np.array(image.convert("RGB"))
-    arr = BlackArtifactAugmentor().add_to_numpy(arr)
+    arr = BlackArtifactAugmentor().add_to_numpy(
+        arr, target_box=target_box, target_boxes=target_boxes
+    )
     stained = Image.fromarray(arr)
     if output_path is not None:
         stained.save(output_path)
@@ -177,6 +193,19 @@ def main() -> None:
     fallback_channel = 1 if args.color_mode in ("auto", "gray") else 3
     use_model = args.mode == "model" or (args.mode == "auto" and checkpoint_path.exists())
     image = Image.open(input_path)
+    target_boxes = None
+    if args.add_synthetic and not args.nudenet_weights:
+        raise ValueError("--add-synthetic requires --nudenet-weights for guided bars")
+    if args.add_synthetic and args.nudenet_weights:
+        regions = load_nudenet_regions(
+            [input_path],
+            weights=Path(args.nudenet_weights),
+            cache_path=Path(args.nudenet_cache),
+            confidence=args.nudenet_confidence,
+        )
+        boxes = regions[str(input_path.resolve())]
+        if boxes:
+            target_boxes = boxes
 
     if use_model:
         if not checkpoint_path.exists():
@@ -184,13 +213,18 @@ def main() -> None:
         model = load_checkpoint(checkpoint_path, device, args.width, fallback_channel)
         channels = model.img_channel
         if args.add_synthetic:
-            image = maybe_add_synthetic(image, Path(args.synthetic_output), channels)
+            image = maybe_add_synthetic(
+                image, Path(args.synthetic_output), channels, target_boxes=target_boxes
+            )
         tensor = image_to_tensor(image, device, channels)
         restored = tensor_to_image(infer_tiled(model, tensor, args.tile_size, args.overlap))
         print(f"Restored with model checkpoint: {checkpoint_path}")
     else:
         if args.add_synthetic:
-            image = maybe_add_synthetic(image, Path(args.synthetic_output), fallback_channel)
+            image = maybe_add_synthetic(
+                image, Path(args.synthetic_output), fallback_channel,
+                target_boxes=target_boxes,
+            )
         restored = classical_restore(image)
         print("Restored with grayscale classical fallback. Train a checkpoint for learned restoration.")
 

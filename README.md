@@ -1,127 +1,122 @@
 # No More Semi-Black Nori
 
-Restoration code for Japanese monochrome manga pages with screentones. The training pipeline takes clean manga scans, synthesizes semi-transparent black stripes, bars, and stains, and trains a model to recover the original one-channel page without smearing line art or halftone texture.
+Train an image restoration model to remove semi-transparent black censoring bars
+from monochrome manga. Training needs **clean pages**: the dataset creates the
+corrupted input and keeps the clean page as its target.
 
-`data/input_0001.png` is only a bundled smoke-test image. For quality training, use clean monochrome manga pages with real screentones.
+## Pipeline
 
-## Manga-Focused Defaults
+1. `dataset.py` loads clean pages, crops training patches, and optionally adds
+   clean screentones. It draws translucent bars with varied gaps and angles.
+2. `nudenet_regions.py` caches detections for `FEMALE_GENITALIA_EXPOSED` and
+   `MALE_GENITALIA_EXPOSED`. Training uses pages with detected regions; bars stay
+   inside each visible box, and nested boxes use the wider enclosing box.
+   Crops without a visible box receive no bar mask.
+3. `model.py` restores the corrupted patch with a configurable NAFNet encoder,
+   bottleneck, and decoder. By default, training initializes it from the local
+   SIDD-width32 checkpoint. RGB input/output weights are converted for grayscale
+   pages; the older FFT bottleneck remains optional for legacy models.
+4. `train.py` minimizes a pixel loss plus artifact, edge, frequency, and local
+   contrast terms. Validation uses repeatable synthetic masks and streams pages
+   each epoch. On CUDA, training uses BF16 mixed precision when supported.
+5. `infer.py` loads the saved architecture and restores a full page or blends
+   overlapping tiles. It also provides a classical fallback and a synthetic
+   corruption demo.
 
-- Images are loaded as grayscale by default (`--color-mode gray`).
-- The model checkpoint records `img_channel`, so grayscale and legacy RGB checkpoints both load correctly.
-- Training corruption includes thin/large translucent dark overlays, soft stains, and repeated stripe angles.
-- Optional clean screentone synthesis adds dot/line tones into light regions during training.
-- Losses combine Charbonnier pixel loss, Sobel gradient loss, Laplacian detail loss, weighted frequency loss, and local contrast loss to preserve line art and screentones.
+The NAF block design follows the [official NAFNet implementation](https://github.com/megvii-research/NAFNet/tree/main/basicsr/models/archs).
+The pre-trained weights initialize a new manga-restoration run; training then
+updates them on the synthetic bar-removal task.
 
-## Install
+## Setup
 
-Use an environment with PyTorch installed, then install the remaining runtime packages:
+Use Python 3.9+ with PyTorch installed. In the provided Conda environment:
 
 ```bash
+conda activate ml
 pip install opencv-python pillow numpy pyyaml tqdm torchvision
 ```
 
-## Prepare Data
-
-Use clean manga images as targets:
-
-```text
-clean_manga/
-  page_001.png
-  page_002.png
-  page_003.png
-```
-
-Good training data should be uncorrupted or manually cleaned. The scripts create the black artifacts synthetically.
+For the default NudeNet guidance, install `ultralytics`. The default config
+expects `NudeNet/chpt/640m.pt` and `pretrain-weights/NAFNet-SIDD-width32.pth`
+relative to the repository root.
 
 ## Train
 
-Default manga-mode training:
+Put clean `.png`, `.jpg`, or other supported images in a directory. Subfolders
+are scanned recursively. Training selects CUDA automatically when available and
+requires at least one NudeNet detection:
 
 ```bash
 python train.py --data clean_manga --epochs 100 --batch-size 4 --patch-size 256
 ```
 
-Training defaults are loaded from `config/default.yaml`. CLI arguments override
-individual YAML values; use `--config path/to/config.yaml` for another preset.
-
-Recommended longer run:
+Both checkpoints load by default. To choose different weights:
 
 ```bash
-python train.py \
-  --data clean_manga \
-  --epochs 300 \
-  --num-patches 4000 \
-  --batch-size 8 \
-  --patch-size 256 \
-  --width 32 \
-  --middle-blocks 2
+python train.py --data clean_manga \
+  --nafnet-pretrained-weights pretrain-weights/NAFNet-SIDD-width32.pth \
+  --nudenet-weights NudeNet/chpt/640m.pt
 ```
 
-Small CPU smoke test:
+For a minimal run on a CUDA machine, replace `clean_manga/positive_page.png`
+with one clean image that NudeNet detects:
 
 ```bash
-python train.py --data data/input_0001.png --epochs 1 --num-patches 2 --batch-size 2 --patch-size 64 --width 8 --middle-blocks 1
+python train.py --data clean_manga/positive_page.png --epochs 1 --num-patches 2 \
+  --batch-size 2 --patch-size 64 --width 8 --middle-blocks 1 \
+  --encoder-blocks 1 1 --decoder-blocks 1 1 --no-pretrained
 ```
 
-Training writes:
+Settings live in [`config/default.yaml`](config/default.yaml). `--config` loads
+another YAML file; scalar CLI flags override its values. Key settings:
 
-- `checkpoints/best_model.pth`
-- `checkpoints/latest_model.pth`
-- `checkpoints/training_loss.npy`
-- `checkpoints/validation_loss.npy`
-- `samples/epoch_*.png`
+| Setting | Purpose |
+| --- | --- |
+| `width`, `middle_blocks`, `encoder_blocks`, `decoder_blocks` | Set NAFNet capacity and stage layout. Encoder and decoder lists must have equal length. |
+| `nafnet_pretrained_weights` / `--no-pretrained` | Initialize a new run from the official SIDD-width32 checkpoint, or train from random weights. The model layout must match the checkpoint. |
+| `nudenet_weights` | Detector weights required for guided synthetic masks. |
+| `use_fft` / `--use-fft` | Enable the legacy FFT bottleneck; new training defaults to `false`. |
+| `amp` / `--no-amp` | Toggle CUDA mixed precision; CPU uses FP32. |
+| `artifact_augmentor.guided_bar_width` | Guided bar width as a fraction of the visible NudeNet box width; default `[0.70, 0.90]`. |
+| `artifact_augmentor.guided_angle_range` | Random angle in degrees for each bar group; default `[-8, 8]`. |
+| `region_crop_probability` | Chance of centering a crop on its selected detection; default `1.0`. |
+| `validation_split`, `sample_every` | Set held-out pages and preview frequency. |
 
-Sample grids are arranged as corrupted input, restored output, and clean target.
-Clean source pages are split into training and validation sets using
-`validation_split` from the YAML configuration.
+See [`config/README.md`](config/README.md) for all configuration fields.
+Training writes `latest_model.pth`, `best_model.pth`, and loss histories to
+`checkpoints/`; preview grids go to `samples/`. Resume with
+`--resume checkpoints/latest_model.pth`. Checkpoints record the model layout,
+optimizer, scheduler, and mixed-precision state. `--resume` takes precedence over
+the NAFNet pre-trained path and continues the saved optimizer state.
+
+To inspect the separate NTD11 YOLO segmentation checkpoint, run
+`python preview_ntd11.py path/to/page.png`. It saves a comparison against cached
+NudeNet boxes, raw NTD11 candidates, a genital-only mask, and detection scores
+under `samples/ntd11_inference/`. The accepted genital threshold comes from
+`mosaic-tool/config.yaml`; this preview does not change the training detector.
+
+**Detector decision (2026-10-12): Skip NTD11 for monochrome manga.** In the
+11-page spot check, it accepted genital regions on only 2 of 8 pages with
+cached NudeNet boxes. It returned no candidates on all 4 monochrome pages in
+that group at 640 px and raw confidence 0.01. Raising the size to 1024 px and
+lowering raw confidence to 0.001 produced only weak candidates, with none
+meeting mosaic-tool's 0.50 genital threshold. Keep NudeNet as the default
+region guide for this dataset. Review `samples/ntd11_inference/overview.png`
+and `samples/ntd11_inference_lowconf_1024/overview.png` for the visual checks;
+this small comparison is not a ground-truth benchmark.
+![link](https://note.com/major_myrtle6198/n/nf192f114cf1d)
 
 ## Restore
 
-Restore with a trained grayscale manga checkpoint:
-
 ```bash
-python infer.py \
-  --input corrupted_page.png \
-  --checkpoint checkpoints/best_model.pth \
-  --output restored_page.png \
-  --mode model
+python infer.py --input corrupted_page.png --checkpoint checkpoints/best_model.pth \
+  --output restored.png --mode model
 ```
 
-For large manga pages, tiled inference is enabled by default:
+Use `--tile-size 512 --overlap 64` for large pages, or `--tile-size 0` for a
+single full-page pass. `--mode classical` needs no checkpoint. For a synthetic
+input preview, add `--add-synthetic --synthetic-output stained_input.png`
+and `--nudenet-weights NudeNet/chpt/640m.pt`. The input must have a detection.
 
-```bash
-python infer.py --input page.png --output restored.png --tile-size 512 --overlap 64
-```
-
-Use `--tile-size 0` to run the full page at once if memory allows.
-
-## Synthetic Demo
-
-To generate a black-artifact input from a clean image and restore it:
-
-```bash
-python infer.py \
-  --input clean_page.png \
-  --checkpoint checkpoints/best_model.pth \
-  --output restored_output.png \
-  --mode model \
-  --add-synthetic \
-  --synthetic-output stained_input.png
-```
-
-## RGB Compatibility
-
-The repo remains compatible with older RGB checkpoints and experiments:
-
-```bash
-python train.py --data clean_images --color-mode rgb
-```
-
-For manga, keep the default grayscale mode unless you specifically need color pages.
-
-## Files
-
-- `dataset.py`: manga dataset, screentone target synthesis, and black-artifact generator.
-- `model.py`: one-channel-first Dual-Domain NAFNet-style restoration model.
-- `train.py`: manga-oriented training loop and texture-preserving losses.
-- `infer.py`: grayscale/RGB checkpoint loading, tiled inference, and classical fallback.
+The model supports grayscale (`--color-mode gray`, default) and RGB training.
+Inference reads the channel count and architecture from the checkpoint.
