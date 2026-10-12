@@ -1,0 +1,54 @@
+data: data
+epochs: 100
+batch_size: 4
+patch_size: 256
+num_patches: 2048
+validation_split: 0.1
+lr: 0.001
+
+width: 32
+middle_blocks: 12
+encoder_blocks: [2, 2, 4, 8]
+decoder_blocks: [2, 2, 2, 2]
+use_fft: false
+amp: true
+color_mode: gray
+nafnet_pretrained_weights: pretrain-weights/NAFNet-SIDD-width32.pth
+# NTD11 was tested on manga pages and missed the monochrome examples; see README.
+nudenet_weights: pretrain-weights/NudeNet-640m.pt
+nudenet_cache: data/nudenet_regions.json
+nudenet_confidence: 0.15
+nudenet_resolution: 640
+nudenet_batch_size: 8
+region_crop_probability: 1.0
+
+workers: 0
+
+screentone:
+  probability: 0.0
+  region_count: [1, 4]
+  strength: [0.08, 0.32]
+
+artifact_augmentor:
+  alpha_range: [0.20, 0.80]
+  bar_count: [1, 1]
+  bars_per_group: [3, 6]
+  bar_thickness: [0.035, 0.055]
+  bar_gap: [0.8, 1.8]
+  guided_bar_width: [0.70, 0.90]
+  guided_angle_range: [-8.0, 8.0]
+  guided_center_jitter: 0.10
+  guided_bar_shift: 0.03
+
+artifact_weight: 4.0
+freq_weight: 0.03
+gradient_weight: 0.08
+laplacian_weight: 0.04
+contrast_weight: 0.05
+
+checkpoint_dir: checkpoints
+sample_dir: samples
+sample_every: 10
+early_stop_patience: 5
+early_stop_min_delta: 0.0001
+seed: 42

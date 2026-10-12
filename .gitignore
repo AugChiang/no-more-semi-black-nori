@@ -1,9 +1,27 @@
 .gemini
+.agents
+.codex
 .vscode
+AGENTS.md
 .env
 *.webp
 *.png
-__pycache__/**
+*.jpg
+__pycache__/
 checkpoints/**
+samples/**
+pretrain-weights/
 *.ipynb
-data/*
+data/*.json
+data/*/*.json
+.smoke_test
+
+# test repo
+NudeNet/
+mosaic-tool/
+
+# skill
+.gputw-skill/
+
+# dataset
+data/
