@@ -37,8 +37,9 @@ pip install opencv-python pillow numpy pyyaml tqdm torchvision
 ```
 
 For the default NudeNet guidance, install `ultralytics`. The default config
-expects `NudeNet/chpt/640m.pt` and `pretrain-weights/NAFNet-SIDD-width32.pth`
-relative to the repository root.
+expects `pretrain-weights/NudeNet-640m.pt` and `pretrain-weights/NAFNet-SIDD-width32.pth`
+relative to the repository root. Place the downloaded NudeNet `640m.pt` in that
+location; the NudeNet source clone is not required for training.
 
 ## Train
 
@@ -55,7 +56,7 @@ Both checkpoints load by default. To choose different weights:
 ```bash
 python train.py --data clean_manga \
   --nafnet-pretrained-weights pretrain-weights/NAFNet-SIDD-width32.pth \
-  --nudenet-weights NudeNet/chpt/640m.pt
+  --nudenet-weights pretrain-weights/NudeNet-640m.pt
 ```
 
 For a minimal run on a CUDA machine, replace `clean_manga/positive_page.png`
@@ -116,7 +117,7 @@ python infer.py --input corrupted_page.png --checkpoint checkpoints/best_model.p
 Use `--tile-size 512 --overlap 64` for large pages, or `--tile-size 0` for a
 single full-page pass. `--mode classical` needs no checkpoint. For a synthetic
 input preview, add `--add-synthetic --synthetic-output stained_input.png`
-and `--nudenet-weights NudeNet/chpt/640m.pt`. The input must have a detection.
+and `--nudenet-weights pretrain-weights/NudeNet-640m.pt`. The input must have a detection.
 
 The model supports grayscale (`--color-mode gray`, default) and RGB training.
 Inference reads the channel count and architecture from the checkpoint.

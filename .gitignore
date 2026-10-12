@@ -15,5 +15,13 @@ pretrain-weights/
 data/*.json
 data/*/*.json
 .smoke_test
+
+# test repo
 NudeNet/
 mosaic-tool/
+
+# skill
+.gputw-skill/
+
+# dataset
+data/

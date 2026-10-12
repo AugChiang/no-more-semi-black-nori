@@ -15,7 +15,7 @@ amp: true
 color_mode: gray
 nafnet_pretrained_weights: pretrain-weights/NAFNet-SIDD-width32.pth
 # NTD11 was tested on manga pages and missed the monochrome examples; see README.
-nudenet_weights: NudeNet/chpt/640m.pt
+nudenet_weights: pretrain-weights/NudeNet-640m.pt
 nudenet_cache: data/nudenet_regions.json
 nudenet_confidence: 0.15
 nudenet_resolution: 640

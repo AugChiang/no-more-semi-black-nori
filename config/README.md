@@ -24,7 +24,7 @@
 - screentone.probability: Probability of adding synthetic clean screentone to a target crop.
 
 ### NudeNet region guidance
-- nudenet_weights: Required path to NudeNet 640m `.pt` weights; default `NudeNet/chpt/640m.pt`.
+- nudenet_weights: Required path to NudeNet 640m `.pt` weights; default `pretrain-weights/NudeNet-640m.pt`.
 - nudenet_cache: JSON path for cached detections on clean source images.
 - nudenet_confidence: Minimum score for the two exposed genitalia labels.
 - nudenet_resolution: Detector input size; 640 matches the 640m checkpoint.
